@@ -2,16 +2,18 @@ import socket
 import threading
 import sys
 
-SERVER_HOST = ""
-SERVER_PORT = 8080
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 12345
 
 show_timestamp = True
+running = True
+
 
 def receive_messages(sock):
 
-    global show_timestamp
+    global show_timestamp, running
 
-    while True:
+    while running:
 
         try:
 
@@ -23,17 +25,20 @@ def receive_messages(sock):
             msg = message
 
             if not show_timestamp and "[" in msg and "]" in msg:
-                msg = msg.rsplit("[",1)[0].strip() + "\n"
+                msg = msg.rsplit("[", 1)[0].strip() + "\n"
 
-            sys.stdout.write("\r" + " "*80 + "\r")
+            sys.stdout.write("\r" + " " * 120 + "\r")
 
-            print(msg,end="")
+            print(msg, end="")
 
             sys.stdout.write("> ")
             sys.stdout.flush()
 
-        except:
+        except Exception:
             break
+
+    running = False
+
 
 def show_help():
 
@@ -61,55 +66,55 @@ exit chat
 
 """)
 
+
 def send_messages(sock):
 
-    global show_timestamp
+    global show_timestamp, running
 
-    while True:
+    while running:
 
         try:
 
             msg = input("> ")
 
             if msg == "/help":
-
                 show_help()
-
                 continue
 
             if msg == "/time off":
-
                 show_timestamp = False
-
                 print("[Client] timestamps hidden")
-
                 continue
 
             if msg == "/time on":
-
                 show_timestamp = True
-
                 print("[Client] timestamps enabled")
-
                 continue
 
             if msg == "/quit":
-
+                running = False
                 sock.send(msg.encode())
                 break
 
             sock.send(msg.encode())
 
-        except:
+        except Exception:
             break
+
+    running = False
+
 
 def start_client():
 
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    sock.connect((SERVER_HOST,SERVER_PORT))
+    try:
+        sock.connect((SERVER_HOST, SERVER_PORT))
+    except Exception as e:
+        print("Connection failed:", e)
+        return
 
-    print(sock.recv(1024).decode(),end="")
+    print(sock.recv(1024).decode(), end="")
 
     username = input()
 
@@ -125,14 +130,21 @@ def start_client():
 
     send_thread = threading.Thread(
         target=send_messages,
-        args=(sock,)
+        args=(sock,),
+        daemon=True
     )
 
     send_thread.start()
 
     send_thread.join()
 
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except:
+        pass
+
     sock.close()
+
 
 if __name__ == "__main__":
     start_client()
