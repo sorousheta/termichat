@@ -1,150 +1,143 @@
-import socket
-import threading
+import asyncio
 import sys
 
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 12345
 
-show_timestamp = True
-running = True
+
+class ClientState:
+    def __init__(self):
+        self.show_timestamp = True
+        self.connected = True
 
 
-def receive_messages(sock):
+def clear_last_line():
+    # move cursor up and clear line
+    sys.stdout.write("\033[F")
+    sys.stdout.write("\033[K")
+    sys.stdout.flush()
 
-    global show_timestamp, running
 
-    while running:
-
+async def receive_messages(reader: asyncio.StreamReader, state: ClientState):
+    while state.connected:
         try:
+            data = await reader.readline()
 
-            message = sock.recv(1024).decode()
-
-            if not message:
+            if not data:
+                print("\n[Client] Disconnected from server")
+                state.connected = False
                 break
 
-            msg = message
+            msg = data.decode(errors="replace")
 
-            if not show_timestamp and "[" in msg and "]" in msg:
-                msg = msg.rsplit("[", 1)[0].strip() + "\n"
+            if not state.show_timestamp:
+                if msg.rstrip().endswith("]") and "[" in msg:
+                    head, sep, tail = msg.rpartition("[")
+                    if ":" in tail and tail.strip("]\r\n").replace(":", "").isdigit():
+                        msg = head.rstrip() + "\n"
 
-            sys.stdout.write("\r" + " " * 120 + "\r")
 
             print(msg, end="")
+            print("> ", end="", flush=True)
 
-            sys.stdout.write("> ")
-            sys.stdout.flush()
-
-        except Exception:
+        except Exception as e:
+            print(f"\n[Client] Error receiving data: {e}")
+            state.connected = False
             break
 
-    running = False
 
+async def send_messages(writer: asyncio.StreamWriter, state: ClientState):
+    loop = asyncio.get_event_loop()
 
-def show_help():
+    while state.connected:
+        try:
+            msg = await loop.run_in_executor(None, input, "> ")
+        except (EOFError, KeyboardInterrupt):
+            msg = "/quit"
 
-    print("""
+        if not msg.strip():
+            continue
 
-Commands:
+        # پاک کردن خطی که کاربر تایپ کرده
+        clear_last_line()
 
-/help
-show help
+        if msg == "/time off":
+            state.show_timestamp = False
+            print("[Client] Timestamps hidden")
+            continue
 
-/users
-list online users
+        if msg == "/time on":
+            state.show_timestamp = True
+            print("[Client] Timestamps enabled")
+            continue
 
-/msg USER MESSAGE
-private message
-
-/time on
-show timestamps
-
-/time off
-hide timestamps
-
-/quit
-exit chat
-
-""")
-
-
-def send_messages(sock):
-
-    global show_timestamp, running
-
-    while running:
+        if msg == "/quit":
+            writer.write(b"/quit\n")
+            await writer.drain()
+            state.connected = False
+            break
 
         try:
-
-            msg = input("> ")
-
-            if msg == "/help":
-                show_help()
-                continue
-
-            if msg == "/time off":
-                show_timestamp = False
-                print("[Client] timestamps hidden")
-                continue
-
-            if msg == "/time on":
-                show_timestamp = True
-                print("[Client] timestamps enabled")
-                continue
-
-            if msg == "/quit":
-                running = False
-                sock.send(msg.encode())
-                break
-
-            sock.send(msg.encode())
-
-        except Exception:
+            writer.write((msg + "\n").encode())
+            await writer.drain()
+        except Exception as e:
+            print(f"\n[Client] Error sending message: {e}")
+            state.connected = False
             break
 
-    running = False
 
-
-def start_client():
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+async def main():
     try:
-        sock.connect((SERVER_HOST, SERVER_PORT))
+        reader, writer = await asyncio.open_connection(
+            SERVER_HOST,
+            SERVER_PORT
+        )
     except Exception as e:
-        print("Connection failed:", e)
+        print(f"[Client] Could not connect to server: {e}")
         return
 
-    print(sock.recv(1024).decode(), end="")
-
-    username = input()
-
-    sock.send(username.encode())
-
-    recv_thread = threading.Thread(
-        target=receive_messages,
-        args=(sock,),
-        daemon=True
-    )
-
-    recv_thread.start()
-
-    send_thread = threading.Thread(
-        target=send_messages,
-        args=(sock,),
-        daemon=True
-    )
-
-    send_thread.start()
-
-    send_thread.join()
-
     try:
-        sock.shutdown(socket.SHUT_RDWR)
+        print((await reader.readline()).decode(), end="")
+        print((await reader.readline()).decode(), end="")
     except:
-        pass
+        print("[Client] Server closed connection")
+        return
 
-    sock.close()
+    password = input()
+    writer.write((password + "\n").encode())
+    await writer.drain()
+
+    line = await reader.readline()
+
+    if not line:
+        print("[Client] Connection closed")
+        return
+
+    text = line.decode()
+    print(text, end="")
+
+    if "Invalid password" in text:
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    username = input().strip()
+    writer.write((username + "\n").encode())
+    await writer.drain()
+
+    state = ClientState()
+
+    recv_task = asyncio.create_task(receive_messages(reader, state))
+    send_task = asyncio.create_task(send_messages(writer, state))
+
+    await send_task
+
+    state.connected = False
+    recv_task.cancel()
+
+    writer.close()
+    await writer.wait_closed()
 
 
 if __name__ == "__main__":
-    start_client()
+    asyncio.run(main())
